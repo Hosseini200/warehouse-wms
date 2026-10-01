@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+pydantic
+pydantic-settings
+python-multipart
+python-dotenv
+PyJWT
+passlib[bcrypt]
+pandas
+openpyxl
+requests
+bcrypt==4.0.1

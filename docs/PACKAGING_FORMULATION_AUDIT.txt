@@ -1,0 +1,1943 @@
+WMS PACKAGING & FORMULATION AUDIT
+
+============================================================
+DOMAIN MODELS - PACKAGING
+FILE: C:\warehouse\backend\app\domain\models.py
+LINES: 35-115
+============================================================
+   35:     inventories = relationship("Inventory", back_populates="warehouse")
+   36:     transfers_out = relationship("Transfer", foreign_keys="[Transfer.source_warehouse_id]", back_populates="source_warehouse")
+   37:     transfers_in = relationship("Transfer", foreign_keys="[Transfer.destination_warehouse_id]", back_populates="destination_warehouse")
+   38:     packaging_inventories = relationship("PackagingInventory", back_populates="warehouse")
+   39: 
+   40: 
+   41: class PackagingMaterial(Base):
+   42:     """
+   43:     مورد تاکید کارفرما: مدل ملزومات و ظروف بسته‌بندی (مانند شیشه ۵۰۰ گرمی، قوطی ۲۰۰ گرمی و...)
+   44:     جهت کنترل ضایعات و ملوگیری از خرابی و مفقودی ظروف
+   45:     """
+   46:     __tablename__ = "packaging_materials"
+   47:     
+   48:     id = Column(Integer, primary_key=True, index=True)
+   49:     name = Column(String(150), nullable=False)
+   50:     sku = Column(String(50), unique=True, index=True, nullable=False)
+   51:     capacity_grams = Column(Float, nullable=True)  # گنجایش ظرف به گرم (مثلاً ۵۰۰ یا ۲۰۰)
+   52:     description = Column(Text, nullable=True)
+   53:     
+   54:     # روابط (Relationships)
+   55:     products = relationship("Product", back_populates="packaging_material")
+   56:     inventories = relationship("PackagingInventory", back_populates="material")
+   57: 
+   58: 
+   59: class PackagingInventory(Base):
+   60:     """جدول کنترل موجودی ملزومات بسته‌بندی به تفکیک هر انبار"""
+   61:     __tablename__ = "packaging_inventory"
+   62:     
+   63:     id = Column(Integer, primary_key=True, index=True)
+   64:     warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
+   65:     material_id = Column(Integer, ForeignKey("packaging_materials.id"), nullable=False)
+   66:     quantity = Column(Integer, default=0, nullable=False)          # تعداد ظروف موجود و سالم در انبار
+   67:     reserved_quantity = Column(Integer, default=0, nullable=False) # تعداد ظروف رزرو شده در حواله‌های معلق
+   68:     
+   69:     # روابط (Relationships)
+   70:     warehouse = relationship("Warehouse", back_populates="packaging_inventories")
+   71:     material = relationship("PackagingMaterial", back_populates="inventories")
+   72:     
+   73:     # تضمین عدم هم‌پوشانی رکوردها
+   74:     __table_args__ = (UniqueConstraint('warehouse_id', 'material_id', name='_warehouse_packaging_uc'),)
+   75: 
+   76: class PackagingAdjustment(Base):
+   77:     """
+   78:     ثبت مصرف، کسری، خرابی یا مفقودی ملزومات بسته‌بندی.
+   79:     این جدول برای گزارش خسارت ابزار بسته‌بندی و ردیابی مصرف در تولید استفاده می‌شود.
+   80:     """
+   81:     __tablename__ = "packaging_adjustments"
+   82: 
+   83:     id = Column(Integer, primary_key=True, index=True)
+   84: 
+   85:     warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
+   86:     material_id = Column(Integer, ForeignKey("packaging_materials.id"), nullable=False)
+   87: 
+   88:     quantity = Column(Integer, nullable=False)
+   89: 
+   90:     # production_usage, damaged, lost, manual_increase, manual_decrease
+   91:     action_type = Column(String(50), nullable=False)
+   92: 
+   93:     # production, admin_adjustment, audit, other
+   94:     reference_type = Column(String(50), nullable=True)
+   95:     reference_id = Column(Integer, nullable=True)
+   96: 
+   97:     reason = Column(Text, nullable=True)
+   98: 
+   99:     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+  100:     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+  101: 
+  102:     warehouse = relationship("Warehouse")
+  103:     material = relationship("PackagingMaterial")
+  104:     user = relationship("User")
+  105:     
+  106: class Product(Base):
+  107:     """مدل اطلاعات پایه کالاها - اصلاح شده جهت پشتیبانی از ملزومات بسته‌بندی"""
+  108:     __tablename__ = "products"
+  109:     
+  110:     id = Column(Integer, primary_key=True, index=True)
+  111:     name = Column(String(100), nullable=False)
+  112:     sku = Column(String(50), unique=True, index=True, nullable=False)
+  113:     base_unit = Column(String(20), nullable=False)  # عدد، گرم، کیلوگرم
+  114:     is_composite = Column(Boolean, default=False)   # آیا محصول ترکیبی و فرمول‌دار است؟ (مثل حنای عسلی)
+  115:     product_type = Column(String(50), nullable=True) # raw_material, finished_good
+
+============================================================
+DOMAIN MODELS - PRODUCT / INVENTORY / RECIPE
+FILE: C:\warehouse\backend\app\domain\models.py
+LINES: 110-275
+============================================================
+  110:     id = Column(Integer, primary_key=True, index=True)
+  111:     name = Column(String(100), nullable=False)
+  112:     sku = Column(String(50), unique=True, index=True, nullable=False)
+  113:     base_unit = Column(String(20), nullable=False)  # عدد، گرم، کیلوگرم
+  114:     is_composite = Column(Boolean, default=False)   # آیا محصول ترکیبی و فرمول‌دار است؟ (مثل حنای عسلی)
+  115:     product_type = Column(String(50), nullable=True) # raw_material, finished_good
+  116:     
+  117:     # ارتباط محصول با ظرف بسته‌بندی پیش‌فرض خود
+  118:     packaging_material_id = Column(Integer, ForeignKey("packaging_materials.id"), nullable=True)
+  119:     unit_weight_grams = Column(Float, default=0.0, nullable=True) # وزن خالص هر واحد محصول به گرم برای محاسبات فرمولاسیون پودری
+  120:     
+  121:     # روابط (Relationships)
+  122:     batches = relationship("Batch", back_populates="product")
+  123:     inventories = relationship("Inventory", back_populates="product")
+  124:     packaging_material = relationship("PackagingMaterial", back_populates="products")
+  125:     
+  126:     # روابط مربوط به فرمولاسیون (BOM)
+  127:     recipes_as_final = relationship("Recipe", foreign_keys="[Recipe.final_product_id]", back_populates="final_product")
+  128:     recipes_as_ingredient = relationship("Recipe", foreign_keys="[Recipe.ingredient_id]", back_populates="ingredient")
+  129: 
+  130: 
+  131: class Batch(Base):
+  132:     """مدل سری ساخت دارویی/غذایی"""
+  133:     __tablename__ = "batches"
+  134:     
+  135:     id = Column(Integer, primary_key=True, index=True)
+  136:     product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+  137:     batch_number = Column(String(50), unique=True, index=True, nullable=False)
+  138:     production_date = Column(DateTime, nullable=True)
+  139:     expiry_date = Column(DateTime, nullable=False)
+  140:     
+  141:     # روابط (Relationships)
+  142:     product = relationship("Product", back_populates="batches")
+  143:     transfers = relationship("Transfer", back_populates="batch")
+  144:     inventories = relationship("Inventory", back_populates="batch")
+  145: 
+  146: 
+  147: class Inventory(Base):
+  148:     """جدول موجودی انبارها - همراه با منطق رزرویشن بار برای چرخه‌های زمان‌دار"""
+  149:     __tablename__ = "inventories"
+  150:     
+  151:     id = Column(Integer, primary_key=True, index=True)
+  152:     warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
+  153:     product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+  154:     batch_id = Column(Integer, ForeignKey("batches.id"), nullable=False)
+  155:     quantity = Column(Float, default=0.0, nullable=False)          # موجودی فیزیکی واقعی انبار
+  156:     reserved_quantity = Column(Float, default=0.0, nullable=False) # موجودی رزرو شده در حواله‌های معلق
+  157:     
+  158:     # روابط (Relationships)
+  159:     warehouse = relationship("Warehouse", back_populates="inventories")
+  160:     product = relationship("Product", back_populates="inventories")
+  161:     batch = relationship("Batch", back_populates="inventories")
+  162:     
+  163:     # تضمین اینکه برای یک کالا با یک بچ خاص در یک انبار فقط یک سطر موجودی داشته باشیم
+  164:     __table_args__ = (UniqueConstraint('warehouse_id', 'product_id', 'batch_id', name='_warehouse_product_batch_uc'),)
+  165: 
+  166: 
+  167: class Transfer(Base):
+  168:     """مدل حواله جابجایی بین انبارها"""
+  169:     __tablename__ = "transfers"
+  170:     
+  171:     id = Column(Integer, primary_key=True, index=True)
+  172:     source_warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
+  173:     destination_warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
+  174:     product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+  175:     batch_id = Column(Integer, ForeignKey("batches.id"), nullable=False)
+  176:     quantity = Column(Float, nullable=False)
+  177:     
+  178:     status = Column(String(50), default="pending_source_approval", nullable=False)
+  179:     description = Column(Text, nullable=True)
+  180:     
+  181:     # فیلدهای زمانی حساس کنترل مهلت‌ها و پیگیری‌ها
+  182:     source_approved_at = Column(DateTime, nullable=True)     # زمان تایید نهایی توسط انبار مبدأ
+  183:     tracking_deadline = Column(DateTime, nullable=True)      # ضرب‌الاجل ۲۴ ساعته برای تایید یا پیگیری خودکار
+  184:     dispute_deadline = Column(DateTime, nullable=True)       # ضرب‌الاجل ۲۴ ساعته تیکت پیش از ارجاع خودکار به مدیریت
+  185:     
+  186:     created_at = Column(DateTime, default=datetime.utcnow)
+  187:     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+  188:     
+  189:     # روابط (Relationships)
+  190:     source_warehouse = relationship("Warehouse", foreign_keys=[source_warehouse_id], back_populates="transfers_out")
+  191:     destination_warehouse = relationship("Warehouse", foreign_keys=[destination_warehouse_id], back_populates="transfers_in")
+  192:     product = relationship("Product")
+  193:     batch = relationship("Batch", back_populates="transfers")
+  194:     dispute = relationship("Dispute", back_populates="transfer", uselist=False)
+  195:     tickets = relationship("TransferTicket", back_populates="transfer")
+  196: 
+  197: 
+  198: class Dispute(Base):
+  199:     """مدل ثبت مغایرت در دریافت کالا"""
+  200:     __tablename__ = "disputes"
+  201:     
+  202:     id = Column(Integer, primary_key=True, index=True)
+  203:     transfer_id = Column(Integer, ForeignKey("transfers.id"), unique=True, nullable=False)
+  204:     reported_quantity = Column(Float, nullable=False)  # مقداری که واقعاً در مقصد دریافت شده
+  205:     missing_amount = Column(Float, nullable=False)     # مقدار کسری کالا
+  206:     reason = Column(Text, nullable=True)
+  207:     status = Column(String(20), default="OPEN", nullable=False)  # OPEN, RESOLVED
+  208:     created_at = Column(DateTime, default=datetime.utcnow)
+  209:     
+  210:     # روابط (Relationships)
+  211:     transfer = relationship("Transfer", back_populates="dispute")
+  212: 
+  213: 
+  214: class TransferTicket(Base):
+  215:     """سیستم تیکتینگ و گفتگوی بین انبارها برای حل مغایرت یا ارجاع به مدیریت"""
+  216:     __tablename__ = "transfer_tickets"
+  217:     
+  218:     id = Column(Integer, primary_key=True, index=True)
+  219:     transfer_id = Column(Integer, ForeignKey("transfers.id"), nullable=False)
+  220:     status = Column(String(50), default="open", nullable=False)
+  221:     title = Column(String(150), nullable=False)
+  222:     created_at = Column(DateTime, default=datetime.utcnow)
+  223:     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+  224:     
+  225:     # روابط (Relationships)
+  226:     transfer = relationship("Transfer", back_populates="tickets")
+  227:     messages = relationship("TicketMessage", back_populates="ticket", cascade="all, delete-orphan")
+  228: 
+  229: 
+  230: class TicketMessage(Base):
+  231:     """پیام‌های ثبت شده در تیکت توسط انبار مبدأ، انبار مقصد یا مدیریت کل"""
+  232:     __tablename__ = "ticket_messages"
+  233:     
+  234:     id = Column(Integer, primary_key=True, index=True)
+  235:     ticket_id = Column(Integer, ForeignKey("transfer_tickets.id"), nullable=False)
+  236:     sender_role = Column(String(50), nullable=False)   # مقادیر: source_warehouse, destination_warehouse, admin
+  237:     sender_name = Column(String(100), nullable=True)
+  238:     message_text = Column(Text, nullable=False)
+  239:     created_at = Column(DateTime, default=datetime.utcnow)
+  240:     
+  241:     # روابط (Relationships)
+  242:     ticket = relationship("TransferTicket", back_populates="messages")
+  243: 
+  244: 
+  245: class Recipe(Base):
+  246:     """
+  247:     مدل فرمولاسیون و ساختار محصول (BOM)
+  248:     اصلاح شده بر اساس درصد ترکیب یا مقدار ثابت فیزیکی (مانند ۳۰ درصد عسل و ۷۰ درصد حنا)
+  249:     """
+  250:     __tablename__ = "recipes"
+  251:     
+  252:     id = Column(Integer, primary_key=True, index=True)
+  253:     final_product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+  254:     ingredient_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+  255:     percentage = Column(Float, nullable=False)  # درصد سهم ماده اولیه از کل محصول (مثلاً ۳۰.۰ برای عسل)
+  256:     
+  257:     # روابط (Relationships)
+  258:     final_product = relationship("Product", foreign_keys=[final_product_id], back_populates="recipes_as_final")
+  259:     ingredient = relationship("Product", foreign_keys=[ingredient_id], back_populates="recipes_as_ingredient")
+  260: 
+  261: class AuditLog(Base):
+  262:     __tablename__ = "audit_logs"
+  263: 
+  264:     id = Column(Integer, primary_key=True)
+  265:     action = Column(String(100), nullable=False)
+  266:     transfer_id = Column(Integer, ForeignKey("transfers.id"), nullable=True)
+  267:     product_id = Column(Integer, ForeignKey("products.id"), nullable=True)
+  268:     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+  269:     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
+  270:     details = Column(Text, nullable=True)
+  271: class User(Base):
+  272:     __tablename__ = "users"
+  273: 
+  274:     id = Column(Integer, primary_key=True, index=True)
+  275:     username = Column(String, unique=True, index=True, nullable=False)
+
+============================================================
+DOMAIN MODELS - USER / TRANSFER RELATED
+FILE: C:\warehouse\backend\app\domain\models.py
+LINES: 275-430
+============================================================
+  275:     username = Column(String, unique=True, index=True, nullable=False)
+  276:     hashed_password = Column(String, nullable=False)
+  277:     
+  278:     # نقش کاربر: می تواند 'admin' (کارفرما)، یا 'warehouse_manager' (انباردار) باشد
+  279:     role = Column(String, default="warehouse_manager", nullable=False)
+  280:     
+  281:     # اتصال کاربر به یک انبار خاص (اگر ادمین باشد این فیلد می تواند Null یا خالی باشد)
+  282:     # توجه: نام جدول انبار را متمایز با کد خودت چک کن (احتمالاً warehouses است)
+  283:     warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=True) 
+  284:     
+  285:     is_active = Column(Boolean, default=True)
+  286:     created_at = Column(DateTime, default=datetime.utcnow)
+
+============================================================
+PRODUCTION ROUTER
+FILE: C:\warehouse\backend\app\api\production_router.py
+LINES: 1-430
+============================================================
+    1: # app/api/production_router.py
+    2: from datetime import datetime, timedelta
+    3: from typing import List, Optional
+    4: 
+    5: from fastapi import APIRouter, Depends, HTTPException, status
+    6: from pydantic import BaseModel
+    7: from sqlalchemy.exc import SQLAlchemyError
+    8: from sqlalchemy.orm import Session
+    9: 
+   10: from app.database import get_db
+   11: from app.domain import models
+   12: from app.api.transfer_router import get_current_user
+   13: 
+   14: 
+   15: router = APIRouter(
+   16:     prefix="/production",
+   17:     tags=["Production & Recipes"]
+   18: )
+   19: 
+   20: 
+   21: class RecipeIngredientInput(BaseModel):
+   22:     ingredient_id: int
+   23:     percentage: float
+   24: 
+   25: 
+   26: class RecipeCreateRequest(BaseModel):
+   27:     final_product_id: int
+   28:     ingredients: List[RecipeIngredientInput]
+   29: 
+   30: 
+   31: class ProductionRequest(BaseModel):
+   32:     warehouse_id: int
+   33:     final_product_id: int
+   34:     produce_quantity: float
+   35:     new_batch_number: str
+   36:     expiry_days: Optional[int] = 730
+   37: 
+   38: 
+   39: def require_admin(current_user: models.User = Depends(get_current_user)):
+   40:     if current_user.role != "admin":
+   41:         raise HTTPException(
+   42:             status_code=status.HTTP_403_FORBIDDEN,
+   43:             detail="فقط مدیر ارشد مجاز به انجام این عملیات است."
+   44:         )
+   45:     return current_user
+   46: 
+   47: def calculate_packaging_needed(produce_quantity: float) -> int:
+   48:     """
+   49:     برای محصول نهایی بسته‌بندی‌شده، هر واحد محصول نهایی به یک ظرف/ابزار بسته‌بندی نیاز دارد.
+   50:     چون بسته‌بندی عددی است، مقدار تولید باید عدد صحیح باشد.
+   51:     """
+   52:     if produce_quantity <= 0:
+   53:         raise HTTPException(
+   54:             status_code=status.HTTP_400_BAD_REQUEST,
+   55:             detail="مقدار تولید باید بزرگتر از صفر باشد."
+   56:         )
+   57: 
+   58:     if abs(produce_quantity - int(produce_quantity)) > 0.000001:
+   59:         raise HTTPException(
+   60:             status_code=status.HTTP_400_BAD_REQUEST,
+   61:             detail="برای محصول دارای بسته‌بندی، مقدار تولید باید عدد صحیح باشد."
+   62:         )
+   63: 
+   64:     return int(produce_quantity)
+   65: 
+   66: @router.post("/recipes/create", status_code=status.HTTP_201_CREATED)
+   67: def create_recipe(
+   68:     payload: RecipeCreateRequest,
+   69:     db: Session = Depends(get_db),
+   70:     _=Depends(require_admin)
+   71: ):
+   72:     """
+   73:     ثبت فرمولاسیون درصدی برای محصول ترکیبی.
+   74:     مدل فعلی Recipe فقط فیلد percentage دارد، نه quantity_required.
+   75:     """
+   76: 
+   77:     final_product = db.query(models.Product).filter(
+   78:         models.Product.id == payload.final_product_id
+   79:     ).first()
+   80: 
+   81:     if not final_product:
+   82:         raise HTTPException(
+   83:             status_code=status.HTTP_404_NOT_FOUND,
+   84:             detail="محصول نهایی با این شناسه یافت نشد."
+   85:         )
+   86: 
+   87:     if not payload.ingredients:
+   88:         raise HTTPException(
+   89:             status_code=status.HTTP_400_BAD_REQUEST,
+   90:             detail="حداقل یک ماده اولیه باید برای فرمولاسیون ثبت شود."
+   91:         )
+   92: 
+   93:     total_percentage = sum(item.percentage for item in payload.ingredients)
+   94: 
+   95:     if abs(total_percentage - 100.0) > 0.01:
+   96:         raise HTTPException(
+   97:             status_code=status.HTTP_400_BAD_REQUEST,
+   98:             detail=f"مجموع درصدهای فرمولاسیون باید دقیقاً ۱۰۰ باشد. مقدار فعلی: {total_percentage}"
+   99:         )
+  100: 
+  101:     for item in payload.ingredients:
+  102:         if item.percentage <= 0:
+  103:             raise HTTPException(
+  104:                 status_code=status.HTTP_400_BAD_REQUEST,
+  105:                 detail="درصد هر ماده اولیه باید بزرگتر از صفر باشد."
+  106:             )
+  107: 
+  108:         ingredient = db.query(models.Product).filter(
+  109:             models.Product.id == item.ingredient_id
+  110:         ).first()
+  111: 
+  112:         if not ingredient:
+  113:             raise HTTPException(
+  114:                 status_code=status.HTTP_404_NOT_FOUND,
+  115:                 detail=f"ماده اولیه با شناسه {item.ingredient_id} یافت نشد."
+  116:             )
+  117: 
+  118:     try:
+  119:         db.query(models.Recipe).filter(
+  120:             models.Recipe.final_product_id == payload.final_product_id
+  121:         ).delete()
+  122: 
+  123:         for item in payload.ingredients:
+  124:             recipe = models.Recipe(
+  125:                 final_product_id=payload.final_product_id,
+  126:                 ingredient_id=item.ingredient_id,
+  127:                 percentage=item.percentage
+  128:             )
+  129:             db.add(recipe)
+  130: 
+  131:         final_product.is_composite = True
+  132:         db.commit()
+  133: 
+  134:         return {
+  135:             "status": "success",
+  136:             "message": f"فرمولاسیون محصول '{final_product.name}' با موفقیت ثبت شد."
+  137:         }
+  138: 
+  139:     except SQLAlchemyError as e:
+  140:         db.rollback()
+  141:         raise HTTPException(
+  142:             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+  143:             detail="???? ????? ????."
+  144:         )
+  145: 
+  146: 
+  147: @router.post("/manufacture", status_code=status.HTTP_201_CREATED)
+  148: def manufacture_product(
+  149:     payload: ProductionRequest,
+  150:     db: Session = Depends(get_db),
+  151:     current_user: models.User = Depends(get_current_user)
+  152: ):
+  153:     """
+  154:     تولید محصول ترکیبی:
+  155:     مواد اولیه را بر اساس درصد فرمولاسیون از انبار کم می‌کند
+  156:     و محصول نهایی را با بچ جدید به موجودی اضافه می‌کند.
+  157:     """
+  158: 
+  159:     if current_user.role != "admin" and current_user.warehouse_id != payload.warehouse_id:
+  160:         raise HTTPException(
+  161:             status_code=status.HTTP_403_FORBIDDEN,
+  162:             detail="شما مجاز به ثبت تولید برای این انبار نیستید."
+  163:         )
+  164: 
+  165:     if payload.produce_quantity <= 0:
+  166:         raise HTTPException(
+  167:             status_code=status.HTTP_400_BAD_REQUEST,
+  168:             detail="مقدار تولید باید بزرگتر از صفر باشد."
+  169:         )
+  170: 
+  171:     warehouse = db.query(models.Warehouse).filter(
+  172:         models.Warehouse.id == payload.warehouse_id,
+  173:         models.Warehouse.is_active == True
+  174:     ).first()
+  175: 
+  176:     if not warehouse:
+  177:         raise HTTPException(
+  178:             status_code=status.HTTP_404_NOT_FOUND,
+  179:             detail="انبار انتخاب‌شده یافت نشد یا غیرفعال است."
+  180:         )
+  181: 
+  182:     final_product = db.query(models.Product).filter(
+  183:         models.Product.id == payload.final_product_id
+  184:     ).first()
+  185: 
+  186:     if not final_product:
+  187:         raise HTTPException(
+  188:             status_code=status.HTTP_404_NOT_FOUND,
+  189:             detail="محصول نهایی یافت نشد."
+  190:         )
+  191: 
+  192:     if not final_product.unit_weight_grams or final_product.unit_weight_grams <= 0:
+  193:         raise HTTPException(
+  194:             status_code=status.HTTP_400_BAD_REQUEST,
+  195:             detail="وزن واحد محصول نهایی برای محاسبه مواد اولیه تعریف نشده است."
+  196:         )
+  197: 
+  198:     existing_batch = db.query(models.Batch).filter(
+  199:         models.Batch.batch_number == payload.new_batch_number
+  200:     ).first()
+  201: 
+  202:     if existing_batch:
+  203:         raise HTTPException(
+  204:             status_code=status.HTTP_400_BAD_REQUEST,
+  205:             detail="شماره بچ محصول نهایی تکراری است."
+  206:         )
+  207: 
+  208:     recipes = db.query(models.Recipe).filter(
+  209:         models.Recipe.final_product_id == payload.final_product_id
+  210:     ).all()
+  211: 
+  212:     if not recipes:
+  213:         raise HTTPException(
+  214:             status_code=status.HTTP_400_BAD_REQUEST,
+  215:             detail="برای این محصول فرمولاسیون ثبت نشده است."
+  216:         )
+  217: 
+  218:     total_final_weight = payload.produce_quantity * final_product.unit_weight_grams
+  219: 
+  220:     deductions = []
+  221: 
+  222:     packaging_inventory = None
+  223:     packaging_needed = 0
+  224: 
+  225:     if final_product.packaging_material_id:
+  226:         packaging_needed = calculate_packaging_needed(payload.produce_quantity)
+  227: 
+  228:         packaging_inventory = db.query(models.PackagingInventory).filter(
+  229:             models.PackagingInventory.warehouse_id == payload.warehouse_id,
+  230:             models.PackagingInventory.material_id == final_product.packaging_material_id
+  231:         ).with_for_update().first()
+  232: 
+  233:         if not packaging_inventory:
+  234:             raise HTTPException(
+  235:                 status_code=status.HTTP_400_BAD_REQUEST,
+  236:                 detail="برای بسته‌بندی این محصول در انبار انتخاب‌شده موجودی ثبت نشده است."
+  237:             )
+  238: 
+  239:         packaging_free_quantity = (
+  240:             packaging_inventory.quantity - packaging_inventory.reserved_quantity
+  241:         )
+  242: 
+  243:         if packaging_free_quantity < packaging_needed:
+  244:             raise HTTPException(
+  245:                 status_code=status.HTTP_400_BAD_REQUEST,
+  246:                 detail=(
+  247:                     f"موجودی آزاد بسته‌بندی کافی نیست. "
+  248:                     f"نیاز: {packaging_needed}، موجودی آزاد: {packaging_free_quantity}"
+  249:                 )
+  250:             )
+  251: 
+  252:     for recipe in recipes:        
+  253:         needed_amount = total_final_weight * (recipe.percentage / 100.0)
+  254: 
+  255:         inventories = db.query(models.Inventory).filter(
+  256:             models.Inventory.warehouse_id == payload.warehouse_id,
+  257:             models.Inventory.product_id == recipe.ingredient_id,
+  258:             models.Inventory.quantity > 0
+  259:         ).order_by(models.Inventory.id.asc()).with_for_update().all()
+  260: 
+  261:         available = sum(inv.quantity - inv.reserved_quantity for inv in inventories)
+  262: 
+  263:         if available < needed_amount:
+  264:             raise HTTPException(
+  265:                 status_code=status.HTTP_400_BAD_REQUEST,
+  266:                 detail=f"موجودی ماده اولیه {recipe.ingredient_id} کافی نیست. نیاز: {needed_amount}، موجودی آزاد: {available}"
+  267:             )
+  268: 
+  269:         deductions.append((inventories, needed_amount))
+  270: 
+  271:     try:
+  272:         if packaging_inventory and packaging_needed > 0:
+  273:             packaging_inventory.quantity -= packaging_needed
+  274: 
+  275:             db.add(models.PackagingAdjustment(
+  276:                 warehouse_id=payload.warehouse_id,
+  277:                 material_id=final_product.packaging_material_id,
+  278:                 quantity=packaging_needed,
+  279:                 action_type="production_usage",
+  280:                 reference_type="production",
+  281:                 reference_id=None,
+  282:                 reason=(
+  283:                     f"مصرف بسته‌بندی برای تولید "
+  284:                     f"{payload.produce_quantity} واحد از محصول {final_product.id}"
+  285:                 ),
+  286:                 user_id=current_user.id
+  287:             ))
+  288:         for inventories, needed_amount in deductions:
+  289:             remaining = needed_amount
+  290: 
+  291:             for inv in inventories:
+  292:                 if remaining <= 0:
+  293:                     break
+  294: 
+  295:                 free_qty = inv.quantity - inv.reserved_quantity
+  296:                 deduct_qty = min(free_qty, remaining)
+  297: 
+  298:                 inv.quantity -= deduct_qty
+  299:                 remaining -= deduct_qty
+  300: 
+  301:         new_batch = models.Batch(
+  302:             product_id=payload.final_product_id,
+  303:             batch_number=payload.new_batch_number,
+  304:             production_date=datetime.utcnow(),
+  305:             expiry_date=datetime.utcnow() + timedelta(days=payload.expiry_days or 730)
+  306:         )
+  307: 
+  308:         db.add(new_batch)
+  309:         db.flush()
+  310: 
+  311:         final_inventory = db.query(models.Inventory).filter(
+  312:             models.Inventory.warehouse_id == payload.warehouse_id,
+  313:             models.Inventory.product_id == payload.final_product_id,
+  314:             models.Inventory.batch_id == new_batch.id
+  315:         ).with_for_update().first()
+  316: 
+  317:         if final_inventory:
+  318:             final_inventory.quantity += payload.produce_quantity
+  319:         else:
+  320:             final_inventory = models.Inventory(
+  321:                 warehouse_id=payload.warehouse_id,
+  322:                 product_id=payload.final_product_id,
+  323:                 batch_id=new_batch.id,
+  324:                 quantity=payload.produce_quantity,
+  325:                 reserved_quantity=0.0
+  326:             )
+  327:             db.add(final_inventory)
+  328: 
+  329:         db.add(models.AuditLog(
+  330:             action="PRODUCTION_MANUFACTURE",
+  331:             product_id=payload.final_product_id,
+  332:             user_id=current_user.id,
+  333:             details=f"تولید {payload.produce_quantity} واحد از محصول {payload.final_product_id} در انبار {payload.warehouse_id}"
+  334:         ))
+  335: 
+  336:         db.commit()
+  337: 
+  338:         return {
+  339:             "status": "success",
+  340:             "message": f"تولید با موفقیت ثبت شد. بچ جدید: {payload.new_batch_number}",
+  341:             "batch_id": new_batch.id,
+  342:             "packaging_material_id": final_product.packaging_material_id,
+  343:             "packaging_used": packaging_needed
+  344:         }
+  345: 
+  346:     except SQLAlchemyError as e:
+  347:         db.rollback()
+  348:         raise HTTPException(
+  349:             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+  350:             detail="???? ????? ????."
+  351:         )
+  352: 
+  353: 
+  354: @router.get("/recipes/{final_product_id}")
+  355: def get_recipe(
+  356:     final_product_id: int,
+  357:     db: Session = Depends(get_db),
+  358:     current_user: models.User = Depends(get_current_user)
+  359: ):
+  360:     product = db.query(models.Product).filter(
+  361:         models.Product.id == final_product_id
+  362:     ).first()
+  363: 
+  364:     if not product:
+  365:         raise HTTPException(
+  366:             status_code=status.HTTP_404_NOT_FOUND,
+  367:             detail="محصول یافت نشد."
+  368:         )
+  369: 
+  370:     recipes = db.query(models.Recipe).filter(
+  371:         models.Recipe.final_product_id == final_product_id
+  372:     ).all()
+  373: 
+  374:     return {
+  375:         "final_product_id": final_product_id,
+  376:         "product_name": product.name,
+  377:         "components": [
+  378:             {
+  379:                 "ingredient_id": r.ingredient_id,
+  380:                 "percentage": r.percentage
+  381:             }
+  382:             for r in recipes
+  383:         ]
+  384:     }
+
+============================================================
+ADMIN ROUTER - REQUEST MODELS
+FILE: C:\warehouse\backend\app\api\admin_router.py
+LINES: 1-100
+============================================================
+    1: # app/api/admin_router.py
+    2: from typing import List, Optional
+    3: 
+    4: from fastapi import APIRouter, Depends, HTTPException, status
+    5: from pydantic import BaseModel
+    6: from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+    7: from sqlalchemy.orm import Session
+    8: 
+    9: from app.database import get_db
+   10: from app.domain import models
+   11: from app.api.transfer_router import get_current_user
+   12: 
+   13: 
+   14: router = APIRouter(
+   15:     prefix="/admin-panel",
+   16:     tags=["Admin - Master Data Management"]
+   17: )
+   18: 
+   19: 
+   20: def require_admin(current_user: models.User = Depends(get_current_user)):
+   21:     if current_user.role != "admin":
+   22:         raise HTTPException(
+   23:             status_code=status.HTTP_403_FORBIDDEN,
+   24:             detail="فقط مدیر ارشد مجاز به انجام این عملیات است."
+   25:         )
+   26:     return current_user
+   27: 
+   28: 
+   29: class WarehouseCreate(BaseModel):
+   30:     name: str
+   31:     location: Optional[str] = None
+   32:     manager_name: Optional[str] = None
+   33: 
+   34: 
+   35: class ProductCreate(BaseModel):
+   36:     name: str
+   37:     sku: str
+   38:     base_unit: str
+   39:     is_composite: bool = False
+   40:     product_type: Optional[str] = "finished_good"
+   41:     unit_weight_grams: Optional[float] = 0.0
+   42:     packaging_material_id: Optional[int] = None
+   43: 
+   44: 
+   45: class PackagingMaterialCreate(BaseModel):
+   46:     name: str
+   47:     sku: str
+   48:     capacity_grams: Optional[float] = None
+   49:     description: Optional[str] = None
+   50: 
+   51: 
+   52: class InventorySetRequest(BaseModel):
+   53:     warehouse_id: int
+   54:     product_id: int
+   55:     batch_id: int
+   56:     quantity: float
+   57:     reserved_quantity: Optional[float] = 0.0
+   58: 
+   59: class PackagingInventorySetRequest(BaseModel):
+   60:     warehouse_id: int
+   61:     material_id: int
+   62:     quantity: int
+   63:     reserved_quantity: Optional[int] = 0
+   64:     reason: Optional[str] = None
+   65: 
+   66: 
+   67: class PackagingAdjustmentRequest(BaseModel):
+   68:     warehouse_id: int
+   69:     material_id: int
+   70:     quantity: int
+   71:     action_type: str  # damaged, lost, manual_decrease, manual_increase
+   72:     reason: Optional[str] = None
+   73: 
+   74: class RecipeComponent(BaseModel):
+   75:     ingredient_id: int
+   76:     percentage: float
+   77: 
+   78: 
+   79: class RecipeCreate(BaseModel):
+   80:     final_product_id: int
+   81:     components: List[RecipeComponent]
+   82: 
+   83: 
+   84: @router.post("/warehouses", status_code=status.HTTP_201_CREATED)
+   85: def create_warehouse(
+   86:     request: WarehouseCreate,
+   87:     db: Session = Depends(get_db),
+   88:     current_user: models.User = Depends(require_admin)
+   89: ):
+   90:     if not request.name.strip():
+   91:         raise HTTPException(
+   92:             status_code=status.HTTP_400_BAD_REQUEST,
+   93:             detail="نام انبار الزامی است."
+   94:         )
+   95: 
+   96:     existing = db.query(models.Warehouse).filter(
+   97:         models.Warehouse.name == request.name.strip()
+   98:     ).first()
+   99: 
+  100:     if existing:
+
+============================================================
+ADMIN ROUTER - PACKAGING MATERIALS
+FILE: C:\warehouse\backend\app\api\admin_router.py
+LINES: 120-180
+============================================================
+  120:             "warehouse_id": new_wh.id
+  121:         }
+  122: 
+  123:     except SQLAlchemyError as e:
+  124:         db.rollback()
+  125:         raise HTTPException(
+  126:             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+  127:             detail="???? ????? ????."
+  128:         )
+  129: 
+  130: 
+  131: @router.post("/packaging-materials", status_code=status.HTTP_201_CREATED)
+  132: def create_packaging_material(
+  133:     request: PackagingMaterialCreate,
+  134:     db: Session = Depends(get_db),
+  135:     current_user: models.User = Depends(require_admin)
+  136: ):
+  137:     if not request.name.strip():
+  138:         raise HTTPException(
+  139:             status_code=status.HTTP_400_BAD_REQUEST,
+  140:             detail="نام ملزومات بسته‌بندی الزامی است."
+  141:         )
+  142: 
+  143:     if not request.sku.strip():
+  144:         raise HTTPException(
+  145:             status_code=status.HTTP_400_BAD_REQUEST,
+  146:             detail="کد ملزومات بسته‌بندی الزامی است."
+  147:         )
+  148: 
+  149:     existing = db.query(models.PackagingMaterial).filter(
+  150:         models.PackagingMaterial.sku == request.sku.strip()
+  151:     ).first()
+  152: 
+  153:     if existing:
+  154:         raise HTTPException(
+  155:             status_code=status.HTTP_400_BAD_REQUEST,
+  156:             detail="ملزومات بسته‌بندی با این کد از قبل وجود دارد."
+  157:         )
+  158: 
+  159:     new_material = models.PackagingMaterial(
+  160:         name=request.name.strip(),
+  161:         sku=request.sku.strip(),
+  162:         capacity_grams=request.capacity_grams,
+  163:         description=request.description
+  164:     )
+  165: 
+  166:     try:
+  167:         db.add(new_material)
+  168:         db.commit()
+  169:         db.refresh(new_material)
+  170: 
+  171:         return {
+  172:             "message": f"ملزومات بسته‌بندی '{new_material.name}' ثبت شد.",
+  173:             "material_id": new_material.id
+  174:         }
+  175: 
+  176:     except SQLAlchemyError as e:
+  177:         db.rollback()
+  178:         raise HTTPException(
+  179:             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+  180:             detail="???? ????? ????."
+
+============================================================
+ADMIN ROUTER - PRODUCTS AND RECIPES
+FILE: C:\warehouse\backend\app\api\admin_router.py
+LINES: 270-390
+============================================================
+  270: 
+  271:     except Exception as e:
+  272:         db.rollback()
+  273:         raise HTTPException(
+  274:             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+  275:             detail="???? ????? ????."
+  276:         )
+  277: 
+  278: 
+  279: @router.get("/products")
+  280: def get_products(
+  281:     db: Session = Depends(get_db),
+  282:     current_user: models.User = Depends(require_admin)
+  283: ):
+  284:     products = db.query(models.Product).order_by(models.Product.id.asc()).all()
+  285: 
+  286:     return [
+  287:         {
+  288:             "id": p.id,
+  289:             "name": p.name,
+  290:             "sku": p.sku,
+  291:             "base_unit": p.base_unit,
+  292:             "is_composite": p.is_composite,
+  293:             "product_type": p.product_type,
+  294:             "unit_weight_grams": p.unit_weight_grams,
+  295:             "packaging_material_id": p.packaging_material_id
+  296:         }
+  297:         for p in products
+  298:     ]
+  299: 
+  300: 
+  301: @router.post("/recipes", status_code=status.HTTP_201_CREATED)
+  302: def create_product_recipe(
+  303:     request: RecipeCreate,
+  304:     db: Session = Depends(get_db),
+  305:     current_user: models.User = Depends(require_admin)
+  306: ):
+  307:     final_product = db.query(models.Product).filter(
+  308:         models.Product.id == request.final_product_id
+  309:     ).first()
+  310: 
+  311:     if not final_product:
+  312:         raise HTTPException(
+  313:             status_code=status.HTTP_404_NOT_FOUND,
+  314:             detail="محصول نهایی یافت نشد."
+  315:         )
+  316: 
+  317:     total_percentage = sum(c.percentage for c in request.components)
+  318: 
+  319:     if abs(total_percentage - 100.0) > 0.01:
+  320:         raise HTTPException(
+  321:             status_code=status.HTTP_400_BAD_REQUEST,
+  322:             detail=f"مجموع درصدهای فرمولاسیون باید دقیقاً ۱۰۰ باشد. مقدار فعلی: {total_percentage}"
+  323:         )
+  324: 
+  325:     for component in request.components:
+  326:         ingredient = db.query(models.Product).filter(
+  327:             models.Product.id == component.ingredient_id
+  328:         ).first()
+  329: 
+  330:         if not ingredient:
+  331:             raise HTTPException(
+  332:                 status_code=status.HTTP_404_NOT_FOUND,
+  333:                 detail=f"ماده اولیه با شناسه {component.ingredient_id} یافت نشد."
+  334:             )
+  335: 
+  336:     try:
+  337:         db.query(models.Recipe).filter(
+  338:             models.Recipe.final_product_id == request.final_product_id
+  339:         ).delete()
+  340: 
+  341:         for component in request.components:
+  342:             db_recipe = models.Recipe(
+  343:                 final_product_id=request.final_product_id,
+  344:                 ingredient_id=component.ingredient_id,
+  345:                 percentage=component.percentage
+  346:             )
+  347:             db.add(db_recipe)
+  348: 
+  349:         final_product.is_composite = True
+  350:         db.commit()
+  351: 
+  352:         return {
+  353:             "message": "فرمولاسیون محصول با موفقیت ثبت شد."
+  354:         }
+  355: 
+  356:     except SQLAlchemyError as e:
+  357:         db.rollback()
+  358:         raise HTTPException(
+  359:             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+  360:             detail="???? ????? ????."
+  361:         )
+  362: 
+  363: @router.post("/packaging-inventory/set", status_code=status.HTTP_200_OK)
+  364: def set_packaging_inventory_quantity(
+  365:     request: PackagingInventorySetRequest,
+  366:     db: Session = Depends(get_db),
+  367:     current_user: models.User = Depends(require_admin)
+  368: ):
+  369:     if request.quantity < 0:
+  370:         raise HTTPException(
+  371:             status_code=status.HTTP_400_BAD_REQUEST,
+  372:             detail="موجودی بسته‌بندی نمی‌تواند منفی باشد."
+  373:         )
+  374: 
+  375:     if request.reserved_quantity is None:
+  376:         request.reserved_quantity = 0
+  377: 
+  378:     if request.reserved_quantity < 0:
+  379:         raise HTTPException(
+  380:             status_code=status.HTTP_400_BAD_REQUEST,
+  381:             detail="موجودی رزروشده بسته‌بندی نمی‌تواند منفی باشد."
+  382:         )
+  383: 
+  384:     if request.reserved_quantity > request.quantity:
+  385:         raise HTTPException(
+  386:             status_code=status.HTTP_400_BAD_REQUEST,
+  387:             detail="موجودی رزروشده بسته‌بندی نمی‌تواند بیشتر از موجودی کل باشد."
+  388:         )
+  389: 
+  390:     warehouse = db.query(models.Warehouse).filter(
+
+============================================================
+ADMIN ROUTER - PACKAGING ADJUSTMENTS
+FILE: C:\warehouse\backend\app\api\admin_router.py
+LINES: 450-530
+============================================================
+  450:         db.refresh(packaging_inventory)
+  451: 
+  452:         return {
+  453:             "message": "موجودی بسته‌بندی با موفقیت ثبت/به‌روزرسانی شد.",
+  454:             "packaging_inventory_id": packaging_inventory.id,
+  455:             "warehouse_id": packaging_inventory.warehouse_id,
+  456:             "material_id": packaging_inventory.material_id,
+  457:             "quantity": packaging_inventory.quantity,
+  458:             "reserved_quantity": packaging_inventory.reserved_quantity
+  459:         }
+  460: 
+  461:     except SQLAlchemyError as e:
+  462:         db.rollback()
+  463:         raise HTTPException(
+  464:             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+  465:             detail="???? ????? ????."
+  466:         )
+  467: 
+  468: @router.post("/packaging-inventory/adjust", status_code=status.HTTP_200_OK)
+  469: def adjust_packaging_inventory(
+  470:     request: PackagingAdjustmentRequest,
+  471:     db: Session = Depends(get_db),
+  472:     current_user: models.User = Depends(require_admin)
+  473: ):
+  474:     allowed_actions = {
+  475:         "damaged",
+  476:         "lost",
+  477:         "manual_decrease",
+  478:         "manual_increase"
+  479:     }
+  480: 
+  481:     if request.action_type not in allowed_actions:
+  482:         raise HTTPException(
+  483:             status_code=status.HTTP_400_BAD_REQUEST,
+  484:             detail="نوع عملیات بسته‌بندی معتبر نیست."
+  485:         )
+  486: 
+  487:     if request.quantity <= 0:
+  488:         raise HTTPException(
+  489:             status_code=status.HTTP_400_BAD_REQUEST,
+  490:             detail="تعداد باید بزرگتر از صفر باشد."
+  491:         )
+  492: 
+  493:     warehouse = db.query(models.Warehouse).filter(
+  494:         models.Warehouse.id == request.warehouse_id,
+  495:         models.Warehouse.is_active == True
+  496:     ).first()
+  497: 
+  498:     if not warehouse:
+  499:         raise HTTPException(
+  500:             status_code=status.HTTP_404_NOT_FOUND,
+  501:             detail="انبار فعال یافت نشد."
+  502:         )
+  503: 
+  504:     material = db.query(models.PackagingMaterial).filter(
+  505:         models.PackagingMaterial.id == request.material_id
+  506:     ).first()
+  507: 
+  508:     if not material:
+  509:         raise HTTPException(
+  510:             status_code=status.HTTP_404_NOT_FOUND,
+  511:             detail="ملزومات بسته‌بندی یافت نشد."
+  512:         )
+  513: 
+  514:     try:
+  515:         packaging_inventory = db.query(models.PackagingInventory).filter(
+  516:             models.PackagingInventory.warehouse_id == request.warehouse_id,
+  517:             models.PackagingInventory.material_id == request.material_id
+  518:         ).with_for_update().first()
+  519: 
+  520:         if not packaging_inventory:
+  521:             if request.action_type == "manual_increase":
+  522:                 packaging_inventory = models.PackagingInventory(
+  523:                     warehouse_id=request.warehouse_id,
+  524:                     material_id=request.material_id,
+  525:                     quantity=0,
+  526:                     reserved_quantity=0
+  527:                 )
+  528:                 db.add(packaging_inventory)
+  529:                 db.flush()
+  530:             else:
+
+============================================================
+TRANSFER ROUTER - CREATE AND APPROVAL
+FILE: C:\warehouse\backend\app\api\transfer_router.py
+LINES: 130-460
+============================================================
+  130:     db.add(models.AuditLog(
+  131:         action=action,
+  132:         transfer_id=transfer_id,
+  133:         product_id=product_id,
+  134:         user_id=user_id,
+  135:         details=details
+  136:     ))
+  137: 
+  138: 
+  139: def _release_reserved_quantity(db: Session, transfer: models.Transfer):
+  140:     inventory = _get_inventory_for_update(
+  141:         db,
+  142:         transfer.source_warehouse_id,
+  143:         transfer.product_id,
+  144:         transfer.batch_id
+  145:     )
+  146: 
+  147:     if inventory:
+  148:         inventory.reserved_quantity = max(
+  149:             0.0,
+  150:             inventory.reserved_quantity - transfer.quantity
+  151:         )
+  152: 
+  153: 
+  154: @router.post("/", status_code=status.HTTP_201_CREATED)
+  155: def initiate_transfer(
+  156:     request: TransferCreate,
+  157:     db: Session = Depends(get_db),
+  158:     current_user: models.User = Depends(get_current_user)
+  159: ):
+  160:     _require_source_access(current_user, request.sender_warehouse_id)
+  161: 
+  162:     if request.amount <= 0:
+  163:         raise HTTPException(
+  164:             status_code=400,
+  165:             detail="مقدار انتقال باید بزرگتر از صفر باشد."
+  166:         )
+  167: 
+  168:     if request.sender_warehouse_id == request.receiver_warehouse_id:
+  169:         raise HTTPException(
+  170:             status_code=400,
+  171:             detail="انبار مبدأ و مقصد نمی‌توانند یکسان باشند."
+  172:         )
+  173: 
+  174:     source_warehouse = db.query(models.Warehouse).filter(
+  175:         models.Warehouse.id == request.sender_warehouse_id,
+  176:         models.Warehouse.is_active == True
+  177:     ).first()
+  178: 
+  179:     if not source_warehouse:
+  180:         raise HTTPException(status_code=404, detail="انبار مبدأ یافت نشد یا غیرفعال است.")
+  181: 
+  182:     destination_warehouse = db.query(models.Warehouse).filter(
+  183:         models.Warehouse.id == request.receiver_warehouse_id,
+  184:         models.Warehouse.is_active == True
+  185:     ).first()
+  186: 
+  187:     if not destination_warehouse:
+  188:         raise HTTPException(status_code=404, detail="انبار مقصد یافت نشد یا غیرفعال است.")
+  189: 
+  190:     product = db.query(models.Product).filter(
+  191:         models.Product.id == request.product_id
+  192:     ).first()
+  193: 
+  194:     if not product:
+  195:         raise HTTPException(status_code=404, detail="محصول یافت نشد.")
+  196: 
+  197:     batch = db.query(models.Batch).filter(
+  198:         models.Batch.id == request.batch_id,
+  199:         models.Batch.product_id == request.product_id
+  200:     ).first()
+  201: 
+  202:     if not batch:
+  203:         raise HTTPException(
+  204:             status_code=400,
+  205:             detail="شماره بچ انتخاب‌شده با محصول انتخاب‌شده همخوانی ندارد."
+  206:         )
+  207: 
+  208:     inventory = _get_inventory_for_update(
+  209:         db,
+  210:         request.sender_warehouse_id,
+  211:         request.product_id,
+  212:         request.batch_id
+  213:     )
+  214: 
+  215:     if not inventory:
+  216:         raise HTTPException(
+  217:             status_code=400,
+  218:             detail="موجودی این کالا و بچ در انبار مبدأ وجود ندارد."
+  219:         )
+  220: 
+  221:     free_quantity = inventory.quantity - inventory.reserved_quantity
+  222: 
+  223:     if free_quantity < request.amount:
+  224:         raise HTTPException(
+  225:             status_code=400,
+  226:             detail=f"موجودی آزاد کافی نیست. موجودی آزاد: {free_quantity}"
+  227:         )
+  228: 
+  229:     now = datetime.utcnow()
+  230: 
+  231:     try:
+  232:         inventory.reserved_quantity += request.amount
+  233: 
+  234:         transfer = models.Transfer(
+  235:             source_warehouse_id=request.sender_warehouse_id,
+  236:             destination_warehouse_id=request.receiver_warehouse_id,
+  237:             product_id=request.product_id,
+  238:             batch_id=request.batch_id,
+  239:             quantity=request.amount,
+  240:             status=models.TransferStatus.PENDING_SOURCE_APPROVAL.value,
+  241:             description=request.description,
+  242:             tracking_deadline=now + timedelta(hours=24),
+  243:             created_at=now,
+  244:             updated_at=now
+  245:         )
+  246:         db.add(transfer)
+  247:         db.flush()
+  248: 
+  249:         _add_audit_log(
+  250:             db=db,
+  251:             action="TRANSFER_INIT",
+  252:             transfer_id=transfer.id,
+  253:             product_id=request.product_id,
+  254:             user_id=current_user.id,
+  255:             details=f"حواله توسط {current_user.username} ثبت شد. مقدار: {request.amount}"
+  256:         )
+  257: 
+  258:         db.commit()
+  259:         db.refresh(transfer)
+  260: 
+  261:         return {
+  262:             "status": "success",
+  263:             "message": "حواله ثبت شد و موجودی مبدأ رزرو شد.",
+  264:             "transfer_id": transfer.id,
+  265:             "transfer_status": transfer.status,
+  266:             "tracking_deadline": transfer.tracking_deadline
+  267:         }
+  268: 
+  269:     except Exception as e:
+  270:         db.rollback()
+  271:         raise HTTPException(status_code=500, detail="???? ????? ????.")
+  272: 
+  273: 
+  274: @router.post("/{transfer_id}/source-approve", status_code=status.HTTP_200_OK)
+  275: def source_warehouse_approve(
+  276:     transfer_id: int,
+  277:     db: Session = Depends(get_db),
+  278:     current_user: models.User = Depends(get_current_user)
+  279: ):
+  280:     transfer = db.query(models.Transfer).filter(
+  281:         models.Transfer.id == transfer_id,
+  282:         models.Transfer.status == models.TransferStatus.PENDING_SOURCE_APPROVAL.value
+  283:     ).with_for_update().first()
+  284: 
+  285:     if not transfer:
+  286:         raise HTTPException(
+  287:             status_code=404,
+  288:             detail="حواله در وضعیت انتظار تایید مبدأ یافت نشد."
+  289:         )
+  290: 
+  291:     _require_source_access(current_user, transfer.source_warehouse_id)
+  292: 
+  293:     try:
+  294:         if transfer.tracking_deadline and datetime.utcnow() > transfer.tracking_deadline:
+  295:             _release_reserved_quantity(db, transfer)
+  296:             transfer.status = models.TransferStatus.EXPIRED.value
+  297:             transfer.updated_at = datetime.utcnow()
+  298: 
+  299:             _add_audit_log(
+  300:                 db=db,
+  301:                 action="TRANSFER_EXPIRED",
+  302:                 transfer_id=transfer.id,
+  303:                 product_id=transfer.product_id,
+  304:                 user_id=current_user.id,
+  305:                 details="حواله به دلیل پایان مهلت تایید مبدأ منقضی شد."
+  306:             )
+  307: 
+  308:             db.commit()
+  309:             raise HTTPException(
+  310:                 status_code=400,
+  311:                 detail="مهلت تایید حواله توسط مبدأ تمام شده است."
+  312:             )
+  313: 
+  314:         inventory = _get_inventory_for_update(
+  315:             db,
+  316:             transfer.source_warehouse_id,
+  317:             transfer.product_id,
+  318:             transfer.batch_id
+  319:         )
+  320: 
+  321:         if not inventory:
+  322:             raise HTTPException(status_code=400, detail="موجودی مبدأ یافت نشد.")
+  323: 
+  324:         if inventory.reserved_quantity < transfer.quantity:
+  325:             raise HTTPException(
+  326:                 status_code=400,
+  327:                 detail="مقدار رزروشده برای این حواله کافی نیست."
+  328:             )
+  329: 
+  330:         if inventory.quantity < transfer.quantity:
+  331:             raise HTTPException(
+  332:                 status_code=400,
+  333:                 detail="موجودی فیزیکی برای تایید خروج کافی نیست."
+  334:             )
+  335: 
+  336:         inventory.quantity -= transfer.quantity
+  337:         inventory.reserved_quantity -= transfer.quantity
+  338: 
+  339:         transfer.status = models.TransferStatus.PENDING_DESTINATION.value
+  340:         transfer.source_approved_at = datetime.utcnow()
+  341:         transfer.updated_at = datetime.utcnow()
+  342: 
+  343:         _add_audit_log(
+  344:             db=db,
+  345:             action="SOURCE_APPROVE",
+  346:             transfer_id=transfer.id,
+  347:             product_id=transfer.product_id,
+  348:             user_id=current_user.id,
+  349:             details=f"خروج کالا توسط {current_user.username} تایید شد."
+  350:         )
+  351: 
+  352:         db.commit()
+  353: 
+  354:         return {
+  355:             "status": "success",
+  356:             "message": "خروج کالا تایید شد و حواله در انتظار تایید مقصد است.",
+  357:             "transfer_id": transfer.id,
+  358:             "transfer_status": transfer.status
+  359:         }
+  360: 
+  361:     except HTTPException:
+  362:         db.rollback()
+  363:         raise
+  364:     except Exception as e:
+  365:         db.rollback()
+  366:         raise HTTPException(status_code=500, detail="???? ????? ????.")
+  367: 
+  368: 
+  369: @router.post("/{transfer_id}/confirm", status_code=status.HTTP_200_OK)
+  370: def confirm_transfer_endpoint(
+  371:     transfer_id: int,
+  372:     request: TransferConfirm,
+  373:     db: Session = Depends(get_db),
+  374:     current_user: models.User = Depends(get_current_user)
+  375: ):
+  376:     transfer = db.query(models.Transfer).filter(
+  377:         models.Transfer.id == transfer_id,
+  378:         models.Transfer.status == models.TransferStatus.PENDING_DESTINATION.value
+  379:     ).with_for_update().first()
+  380: 
+  381:     if not transfer:
+  382:         raise HTTPException(
+  383:             status_code=404,
+  384:             detail="حواله در وضعیت انتظار تایید مقصد یافت نشد."
+  385:         )
+  386: 
+  387:     _require_destination_access(current_user, transfer.destination_warehouse_id)
+  388: 
+  389:     if request.received_amount < 0:
+  390:         raise HTTPException(status_code=400, detail="مقدار دریافتی نمی‌تواند منفی باشد.")
+  391: 
+  392:     if request.received_amount > transfer.quantity:
+  393:         raise HTTPException(
+  394:             status_code=400,
+  395:             detail="مقدار دریافتی نمی‌تواند بیشتر از مقدار ارسال‌شده باشد."
+  396:         )
+  397: 
+  398:     try:
+  399:         if request.received_amount < transfer.quantity:
+  400:             missing = transfer.quantity - request.received_amount
+  401: 
+  402:             if request.received_amount > 0:
+  403:                 receiver_inventory = _get_inventory_for_update(
+  404:                     db,
+  405:                     transfer.destination_warehouse_id,
+  406:                     transfer.product_id,
+  407:                     transfer.batch_id
+  408:                 )
+  409: 
+  410:                 if receiver_inventory:
+  411:                     receiver_inventory.quantity += request.received_amount
+  412:                 else:
+  413:                     receiver_inventory = models.Inventory(
+  414:                         warehouse_id=transfer.destination_warehouse_id,
+  415:                         product_id=transfer.product_id,
+  416:                         batch_id=transfer.batch_id,
+  417:                         quantity=request.received_amount,
+  418:                         reserved_quantity=0.0
+  419:                     )
+  420:                     db.add(receiver_inventory)
+  421: 
+  422:             dispute = models.Dispute(
+  423:                 transfer_id=transfer.id,
+  424:                 reported_quantity=request.received_amount,
+  425:                 missing_amount=missing,
+  426:                 status="OPEN",
+  427:                 reason="کسری کالا هنگام تایید مقصد"
+  428:             )
+  429:             db.add(dispute)
+  430: 
+  431:             transfer.status = models.TransferStatus.DISPUTED.value
+  432:             transfer.dispute_deadline = datetime.utcnow() + timedelta(hours=24)
+  433:             transfer.updated_at = datetime.utcnow()
+  434: 
+  435:             ticket = models.TransferTicket(
+  436:                 transfer_id=transfer.id,
+  437:                 status=models.TicketStatus.OPEN.value,
+  438:                 title=f"مغایرت حواله {transfer.id}"
+  439:             )
+  440:             db.add(ticket)
+  441:             db.flush()
+  442: 
+  443:             db.add(models.TicketMessage(
+  444:                 ticket_id=ticket.id,
+  445:                 sender_role="admin",
+  446:                 sender_name="system",
+  447:                 message_text=(
+  448:                     f"مغایرت ثبت شد. مقدار ارسال‌شده: {transfer.quantity}، "
+  449:                     f"مقدار دریافتی: {request.received_amount}، کسری: {missing}"
+  450:                 )
+  451:             ))
+  452: 
+  453:             _add_audit_log(
+  454:                 db=db,
+  455:                 action="DISPUTE_CREATED",
+  456:                 transfer_id=transfer.id,
+  457:                 product_id=transfer.product_id,
+  458:                 user_id=current_user.id,
+  459:                 details=f"مغایرت توسط {current_user.username} ثبت شد. کسری: {missing}"
+  460:             )
+
+============================================================
+FRONTEND - API HELPERS
+FILE: C:\warehouse\builds\warehouse-pwa_20260722_114050\src\App.jsx
+LINES: 1-260
+============================================================
+    1: import { useEffect, useState } from 'react'
+    2: import { apiClient } from './api/client'
+    3: 
+    4: const pages = {
+    5:   home: 'داشبورد',
+    6:   inventory: 'موجودی انبار',
+    7:   transfer: 'ثبت حواله انتقال',
+    8:   approvals: 'کارتابل حواله‌ها',
+    9:   disputes: 'مغایرت  و تیکت',
+   10:   production: 'تولید و فرمولاسیون',
+   11:   packaging: 'بسته‌بندی و خسارت',
+   12: }
+   13: 
+   14: function PageHeader({ title, onBack }) {
+   15:   return (
+   16:     <div className="page-header">
+   17:       <button className="ghost-button" onClick={onBack}>
+   18:         بازگشت
+   19:       </button>
+   20:       <h2>{title}</h2>
+   21:     </div>
+   22:   )
+   23: }
+   24: 
+   25: function PlaceholderPage({ title, description, onBack }) {
+   26:   return (
+   27:     <>
+   28:       <PageHeader title={title} onBack={onBack} />
+   29: 
+   30:       <section className="welcome-card">
+   31:         <h2>{title}</h2>
+   32:         <p>{description}</p>
+   33:       </section>
+   34:     </>
+   35:   )
+   36: }
+   37: 
+   38: function formatNumber(value) {
+   39:   if (value === null || value === undefined) return '-'
+   40:   return Number(value).toLocaleString('fa-IR')
+   41: }
+   42: 
+   43: function InventoryPage({ user, onBack }) {
+   44:   const [items, setItems] = useState([])
+   45:   const [loading, setLoading] = useState(true)
+   46:   const [error, setError] = useState('')
+   47:   const [search, setSearch] = useState('')
+   48: 
+   49:   useEffect(() => {
+   50:     const loadInventory = async () => {
+   51:       setLoading(true)
+   52:       setError('')
+   53: 
+   54:       try {
+   55:         const response = await apiClient.get('/reports/warehouse-inventory-status')
+   56:         let data = response.data || []
+   57: 
+   58:         if (user.role === 'warehouse_manager' && user.warehouse_id) {
+   59:           data = data.filter((item) => item.warehouse_id === user.warehouse_id)
+   60:         }
+   61: 
+   62:         setItems(data)
+   63:       } catch (err) {
+   64:         const detail = err?.response?.data?.detail
+   65:         setError(detail || 'خطا در دریافت موجودی انبار')
+   66:       } finally {
+   67:         setLoading(false)
+   68:       }
+   69:     }
+   70: 
+   71:     loadInventory()
+   72:   }, [user])
+   73: 
+   74:   const filteredItems = items.filter((item) => {
+   75:     const keyword = search.trim().toLowerCase()
+   76: 
+   77:     if (!keyword) return true
+   78: 
+   79:     return (
+   80:       String(item.product || '').toLowerCase().includes(keyword) ||
+   81:       String(item.warehouse || '').toLowerCase().includes(keyword) ||
+   82:       String(item.batch_number || '').toLowerCase().includes(keyword) ||
+   83:       String(item.product_id || '').includes(keyword) ||
+   84:       String(item.batch_id || '').includes(keyword)
+   85:     )
+   86:   })
+   87: 
+   88:   return (
+   89:     <>
+   90:       <PageHeader title="موجودی انبار" onBack={onBack} />
+   91: 
+   92:       <section className="inventory-toolbar">
+   93:         <input
+   94:           value={search}
+   95:           onChange={(event) => setSearch(event.target.value)}
+   96:           placeholder="جستجو بر اساس کالا، انبار یا بچ..."
+   97:         />
+   98:       </section>
+   99: 
+  100:       {loading && (
+  101:         <section className="welcome-card">
+  102:           <p>در حال دریافت موجودی...</p>
+  103:         </section>
+  104:       )}
+  105: 
+  106:       {error && (
+  107:         <section className="error-box">
+  108:           {error}
+  109:         </section>
+  110:       )}
+  111: 
+  112:       {!loading && !error && (
+  113:         <>
+  114:           <section className="summary-row">
+  115:             <div className="summary-card">
+  116:               <span>تعداد ردیف‌ها</span>
+  117:               <strong>{formatNumber(filteredItems.length)}</strong>
+  118:             </div>
+  119: 
+  120:             <div className="summary-card">
+  121:               <span>مجموع موجودی آزاد</span>
+  122:               <strong>
+  123:                 {formatNumber(
+  124:                   filteredItems.reduce((sum, item) => sum + Number(item.free_quantity || 0), 0)
+  125:                 )}
+  126:               </strong>
+  127:             </div>
+  128:           </section>
+  129: 
+  130:           <section className="inventory-list">
+  131:             {filteredItems.length === 0 ? (
+  132:               <div className="empty-state">
+  133:                 موردی برای نمایش وجود ندارد.
+  134:               </div>
+  135:             ) : (
+  136:               filteredItems.map((item) => (
+  137:                 <article
+  138:                   className="inventory-item"
+  139:                   key={`${item.warehouse_id}-${item.product_id}-${item.batch_id}`}
+  140:                 >
+  141:                   <div className="inventory-item-header">
+  142:                     <h3>{item.product}</h3>
+  143:                     <span>کالا #{item.product_id}</span>
+  144:                   </div>
+  145: 
+  146:                   <div className="inventory-meta">
+  147:                     <span>{item.warehouse}</span>
+  148:                     <span>بچ: {item.batch_number}</span>
+  149:                   </div>
+  150: 
+  151:                   <div className="quantity-grid">
+  152:                     <div>
+  153:                       <span>کل</span>
+  154:                       <strong>{formatNumber(item.quantity)}</strong>
+  155:                     </div>
+  156: 
+  157:                     <div>
+  158:                       <span>رزرو</span>
+  159:                       <strong>{formatNumber(item.reserved_quantity)}</strong>
+  160:                     </div>
+  161: 
+  162:                     <div>
+  163:                       <span>آزاد</span>
+  164:                       <strong>{formatNumber(item.free_quantity)}</strong>
+  165:                     </div>
+  166:                   </div>
+  167:                 </article>
+  168:               ))
+  169:             )}
+  170:           </section>
+  171:         </>
+  172:       )}
+  173:     </>
+  174:   )
+  175: }
+  176: 
+  177: function TransferPage({ user, onBack }) {
+  178:   const [inventoryItems, setInventoryItems] = useState([])
+  179:   const [destinations, setDestinations] = useState([])
+  180: 
+  181:   const [sourceWarehouseId, setSourceWarehouseId] = useState(
+  182:     user.role === 'warehouse_manager' && user.warehouse_id ? String(user.warehouse_id) : ''
+  183:   )
+  184:   const [selectedInventoryKey, setSelectedInventoryKey] = useState('')
+  185:   const [receiverWarehouseId, setReceiverWarehouseId] = useState('')
+  186:   const [amount, setAmount] = useState('')
+  187:   const [description, setDescription] = useState('')
+  188: 
+  189:   const [loading, setLoading] = useState(true)
+  190:   const [submitting, setSubmitting] = useState(false)
+  191:   const [error, setError] = useState('')
+  192:   const [success, setSuccess] = useState(null)
+  193: 
+  194:   useEffect(() => {
+  195:     const loadData = async () => {
+  196:       setLoading(true)
+  197:       setError('')
+  198: 
+  199:       try {
+  200:         const [inventoryResponse, destinationsResponse] = await Promise.all([
+  201:           apiClient.get('/reports/warehouse-inventory-status'),
+  202:           apiClient.get('/warehouses/destinations'),
+  203:         ])
+  204: 
+  205:         let inventoryData = inventoryResponse.data || []
+  206:         let destinationData = destinationsResponse.data || []
+  207: 
+  208:         inventoryData = inventoryData.filter((item) => Number(item.free_quantity || 0) > 0)
+  209: 
+  210:         if (user.role === 'warehouse_manager' && user.warehouse_id) {
+  211:           inventoryData = inventoryData.filter((item) => item.warehouse_id === user.warehouse_id)
+  212:           destinationData = destinationData.filter((item) => item.id !== user.warehouse_id)
+  213:         }
+  214: 
+  215:         setInventoryItems(inventoryData)
+  216:         setDestinations(destinationData)
+  217: 
+  218:         if (user.role === 'warehouse_manager' && user.warehouse_id) {
+  219:           setSourceWarehouseId(String(user.warehouse_id))
+  220:         }
+  221:       } catch (err) {
+  222:         const detail = err?.response?.data?.detail
+  223:         setError(detail || 'خطا در دریافت اطلاعات حواله')
+  224:       } finally {
+  225:         setLoading(false)
+  226:       }
+  227:     }
+  228: 
+  229:     loadData()
+  230:   }, [user])
+  231: 
+  232:   const sourceWarehouses = Array.from(
+  233:     new Map(
+  234:       inventoryItems.map((item) => [
+  235:         item.warehouse_id,
+  236:         {
+  237:           id: item.warehouse_id,
+  238:           name: item.warehouse,
+  239:         },
+  240:       ])
+  241:     ).values()
+  242:   )
+  243: 
+  244:   const availableItems = inventoryItems.filter((item) => {
+  245:     if (!sourceWarehouseId) return false
+  246:     return item.warehouse_id === Number(sourceWarehouseId)
+  247:   })
+  248: 
+  249:   const selectedItem = availableItems.find((item) => {
+  250:     const key = `${item.warehouse_id}-${item.product_id}-${item.batch_id}`
+  251:     return key === selectedInventoryKey
+  252:   })
+  253: 
+  254:   const handleSubmit = async (event) => {
+  255:     event.preventDefault()
+  256:     setError('')
+  257:     setSuccess(null)
+  258: 
+  259:     if (!sourceWarehouseId) {
+  260:       setError('انبار مبدأ را انتخاب کنید.')
+
+============================================================
+FRONTEND - PAGE ROUTING
+FILE: C:\warehouse\builds\warehouse-pwa_20260722_114050\src\App.jsx
+LINES: 1080-1200
+============================================================
+ 1080:                 value={password}
+ 1081:                 onChange={(event) => setPassword(event.target.value)}
+ 1082:                 placeholder="رمز عبور"
+ 1083:                 required
+ 1084:               />
+ 1085:             </label>
+ 1086: 
+ 1087:             {error && <div className="error-box">{error}</div>}
+ 1088: 
+ 1089:             <button type="submit" disabled={loading}>
+ 1090:               {loading ? 'در حال ورود...' : 'ورود به سامانه'}
+ 1091:             </button>
+ 1092:           </form>
+ 1093:         </section>
+ 1094:       </main>
+ 1095:     )
+ 1096:   }
+ 1097: 
+ 1098:   return (
+ 1099:     <main className="app-shell dashboard-page">
+ 1100:       <header className="topbar">
+ 1101:         <div>
+ 1102:           <h1>سامانه هوشمند انبار</h1>
+ 1103:           <p>
+ 1104:             {user.role === 'admin' ? 'مدیر ارشد' : 'انباردار'}
+ 1105:             {user.warehouse_id ? ` | انبار ${user.warehouse_id}` : ''}
+ 1106:           </p>
+ 1107:         </div>
+ 1108: 
+ 1109:         <button className="ghost-button" onClick={handleLogout}>
+ 1110:           خروج
+ 1111:         </button>
+ 1112:       </header>
+ 1113: 
+ 1114:       {activePage === 'home' && (
+ 1115:         <>
+ 1116:           <section className="welcome-card">
+ 1117:             <h2>خوش آمدید، {user.username}</h2>
+ 1118:             <p>
+ 1119:               ورود موفق بود. از این پنل می‌توانید به بخش‌های موجودی، حواله،
+ 1120:               تاییدها، مغایرت، تولید و بسته‌بندی وارد شوید.
+ 1121:             </p>
+ 1122:           </section>
+ 1123: 
+ 1124:           <section className="menu-grid">
+ 1125:             <button className="menu-card" onClick={() => setActivePage('inventory')}>
+ 1126:               <span>📦</span>
+ 1127:               موجودی انبار
+ 1128:             </button>
+ 1129: 
+ 1130:             <button className="menu-card" onClick={() => setActivePage('transfer')}>
+ 1131:               <span>🚚</span>
+ 1132:               ثبت حواله انتقال
+ 1133:             </button>
+ 1134: 
+ 1135:             <button className="menu-card" onClick={() => setActivePage('approvals')}>
+ 1136:               <span>✅</span>
+ 1137:               کارتابل حواله‌ها
+ 1138:             </button>
+ 1139: 
+ 1140:             <button className="menu-card" onClick={() => setActivePage('disputes')}>
+ 1141:               <span>⚠️</span>
+ 1142:               مغایرت و تیکت
+ 1143:             </button>
+ 1144: 
+ 1145:             <button className="menu-card" onClick={() => setActivePage('production')}>
+ 1146:               <span>🧪</span>
+ 1147:               تولید و فرمولاسیون
+ 1148:             </button>
+ 1149: 
+ 1150:             <button className="menu-card" onClick={() => setActivePage('packaging')}>
+ 1151:               <span>🥡</span>
+ 1152:               بسته‌بندی و خسارت
+ 1153:             </button>
+ 1154:           </section>
+ 1155:         </>
+ 1156:       )}
+ 1157: 
+ 1158:       {activePage === 'inventory' && (
+ 1159:         <InventoryPage user={user} onBack={goHome} />
+ 1160:       )}
+ 1161: 
+ 1162:       {activePage === 'transfer' && (
+ 1163:         <TransferPage user={user} onBack={goHome} />
+ 1164:       )}
+ 1165: 
+ 1166:       {activePage === 'approvals' && (
+ 1167:         <ApprovalsPage user={user} onBack={goHome} />
+ 1168:       )}
+ 1169: 
+ 1170:       {activePage === 'disputes' && (
+ 1171:         <DisputesPage onBack={goHome} />
+ 1172:       )}
+ 1173: 
+ 1174:       {activePage === 'production' && (
+ 1175:         <PlaceholderPage
+ 1176:           title={pages.production}
+ 1177:           onBack={goHome}
+ 1178:           description="در این بخش تولید محصول طبق فرمولاسیون و کسر مواد اولیه انجام می‌شود."
+ 1179:         />
+ 1180:       )}
+ 1181: 
+ 1182:       {activePage === 'packaging' && (
+ 1183:         <PlaceholderPage
+ 1184:           title={pages.packaging}
+ 1185:           onBack={goHome}
+ 1186:           description="در این بخش مصرف، خرابی، مفقودی و خسارت ابزار بسته‌بندی ثبت و پیگیری می‌شود."
+ 1187:         />
+ 1188:       )}
+ 1189:     </main>
+ 1190:   )
+ 1191: }
+ 1192: 
+ 1193: export default App
+
+============================================================
+DATABASE SCHEMA
+============================================================
+
+---------------- TABLE: products ----------------
+                                                                      Table "public.products"
+        Column         |          Type          | Collation | Nullable |               Default                | Storage  | Compression | Stats target | Description 
+-----------------------+------------------------+-----------+----------+--------------------------------------+----------+-------------+--------------+-------------
+ id                    | integer                |           | not null | nextval('products_id_seq'::regclass) | plain    |             |              | 
+ name                  | character varying(100) |           | not null |                                      | extended |             |              | 
+ sku                   | character varying(50)  |           | not null |                                      | extended |             |              | 
+ base_unit             | character varying(20)  |           | not null |                                      | extended |             |              | 
+ is_composite          | boolean                |           |          |                                      | plain    |             |              | 
+ product_type          | character varying(50)  |           |          |                                      | extended |             |              | 
+ packaging_material_id | integer                |           |          |                                      | plain    |             |              | 
+ unit_weight_grams     | double precision       |           |          |                                      | plain    |             |              | 
+Indexes:
+    "products_pkey" PRIMARY KEY, btree (id)
+    "ix_products_id" btree (id)
+    "ix_products_sku" UNIQUE, btree (sku)
+Foreign-key constraints:
+    "products_packaging_material_id_fkey" FOREIGN KEY (packaging_material_id) REFERENCES packaging_materials(id)
+Referenced by:
+    TABLE "audit_logs" CONSTRAINT "audit_logs_product_id_fkey" FOREIGN KEY (product_id) REFERENCES products(id)
+    TABLE "batches" CONSTRAINT "batches_product_id_fkey" FOREIGN KEY (product_id) REFERENCES products(id)
+    TABLE "inventories" CONSTRAINT "inventories_product_id_fkey" FOREIGN KEY (product_id) REFERENCES products(id)
+    TABLE "recipes" CONSTRAINT "recipes_final_product_id_fkey" FOREIGN KEY (final_product_id) REFERENCES products(id)
+    TABLE "recipes" CONSTRAINT "recipes_ingredient_id_fkey" FOREIGN KEY (ingredient_id) REFERENCES products(id)
+    TABLE "transfers" CONSTRAINT "transfers_product_id_fkey" FOREIGN KEY (product_id) REFERENCES products(id)
+Access method: heap
+
+
+---------------- TABLE: packaging_materials ----------------
+                                                                   Table "public.packaging_materials"
+     Column     |          Type          | Collation | Nullable |                     Default                     | Storage  | Compression | Stats target | Description 
+----------------+------------------------+-----------+----------+-------------------------------------------------+----------+-------------+--------------+-------------
+ id             | integer                |           | not null | nextval('packaging_materials_id_seq'::regclass) | plain    |             |              | 
+ name           | character varying(150) |           | not null |                                                 | extended |             |              | 
+ sku            | character varying(50)  |           | not null |                                                 | extended |             |              | 
+ capacity_grams | double precision       |           |          |                                                 | plain    |             |              | 
+ description    | text                   |           |          |                                                 | extended |             |              | 
+Indexes:
+    "packaging_materials_pkey" PRIMARY KEY, btree (id)
+    "ix_packaging_materials_id" btree (id)
+    "ix_packaging_materials_sku" UNIQUE, btree (sku)
+Referenced by:
+    TABLE "packaging_adjustments" CONSTRAINT "packaging_adjustments_material_id_fkey" FOREIGN KEY (material_id) REFERENCES packaging_materials(id)
+    TABLE "packaging_inventory" CONSTRAINT "packaging_inventory_material_id_fkey" FOREIGN KEY (material_id) REFERENCES packaging_materials(id)
+    TABLE "products" CONSTRAINT "products_packaging_material_id_fkey" FOREIGN KEY (packaging_material_id) REFERENCES packaging_materials(id)
+Access method: heap
+
+
+---------------- TABLE: packaging_inventory ----------------
+                                                            Table "public.packaging_inventory"
+      Column       |  Type   | Collation | Nullable |                     Default                     | Storage | Compression | Stats target | Description 
+-------------------+---------+-----------+----------+-------------------------------------------------+---------+-------------+--------------+-------------
+ id                | integer |           | not null | nextval('packaging_inventory_id_seq'::regclass) | plain   |             |              | 
+ warehouse_id      | integer |           | not null |                                                 | plain   |             |              | 
+ material_id       | integer |           | not null |                                                 | plain   |             |              | 
+ quantity          | integer |           | not null |                                                 | plain   |             |              | 
+ reserved_quantity | integer |           | not null |                                                 | plain   |             |              | 
+Indexes:
+    "packaging_inventory_pkey" PRIMARY KEY, btree (id)
+    "_warehouse_packaging_uc" UNIQUE CONSTRAINT, btree (warehouse_id, material_id)
+    "ix_packaging_inventory_id" btree (id)
+Foreign-key constraints:
+    "packaging_inventory_material_id_fkey" FOREIGN KEY (material_id) REFERENCES packaging_materials(id)
+    "packaging_inventory_warehouse_id_fkey" FOREIGN KEY (warehouse_id) REFERENCES warehouses(id)
+Access method: heap
+
+
+---------------- TABLE: packaging_adjustments ----------------
+                                                                     Table "public.packaging_adjustments"
+     Column     |            Type             | Collation | Nullable |                      Default                      | Storage  | Compression | Stats target | Description 
+----------------+-----------------------------+-----------+----------+---------------------------------------------------+----------+-------------+--------------+-------------
+ id             | integer                     |           | not null | nextval('packaging_adjustments_id_seq'::regclass) | plain    |             |              | 
+ warehouse_id   | integer                     |           | not null |                                                   | plain    |             |              | 
+ material_id    | integer                     |           | not null |                                                   | plain    |             |              | 
+ quantity       | integer                     |           | not null |                                                   | plain    |             |              | 
+ action_type    | character varying(50)       |           | not null |                                                   | extended |             |              | 
+ reference_type | character varying(50)       |           |          |                                                   | extended |             |              | 
+ reference_id   | integer                     |           |          |                                                   | plain    |             |              | 
+ reason         | text                        |           |          |                                                   | extended |             |              | 
+ user_id        | integer                     |           |          |                                                   | plain    |             |              | 
+ created_at     | timestamp without time zone |           | not null |                                                   | plain    |             |              | 
+Indexes:
+    "packaging_adjustments_pkey" PRIMARY KEY, btree (id)
+    "ix_packaging_adjustments_id" btree (id)
+Foreign-key constraints:
+    "packaging_adjustments_material_id_fkey" FOREIGN KEY (material_id) REFERENCES packaging_materials(id)
+    "packaging_adjustments_user_id_fkey" FOREIGN KEY (user_id) REFERENCES users(id)
+    "packaging_adjustments_warehouse_id_fkey" FOREIGN KEY (warehouse_id) REFERENCES warehouses(id)
+Access method: heap
+
+
+---------------- TABLE: recipes ----------------
+                                                                Table "public.recipes"
+      Column      |       Type       | Collation | Nullable |               Default               | Storage | Compression | Stats target | Description 
+------------------+------------------+-----------+----------+-------------------------------------+---------+-------------+--------------+-------------
+ id               | integer          |           | not null | nextval('recipes_id_seq'::regclass) | plain   |             |              | 
+ final_product_id | integer          |           | not null |                                     | plain   |             |              | 
+ ingredient_id    | integer          |           | not null |                                     | plain   |             |              | 
+ percentage       | double precision |           | not null |                                     | plain   |             |              | 
+Indexes:
+    "recipes_pkey" PRIMARY KEY, btree (id)
+    "ix_recipes_id" btree (id)
+Foreign-key constraints:
+    "recipes_final_product_id_fkey" FOREIGN KEY (final_product_id) REFERENCES products(id)
+    "recipes_ingredient_id_fkey" FOREIGN KEY (ingredient_id) REFERENCES products(id)
+Access method: heap
+
+
+---------------- TABLE: inventories ----------------
+                                                                 Table "public.inventories"
+      Column       |       Type       | Collation | Nullable |                 Default                 | Storage | Compression | Stats target | Description 
+-------------------+------------------+-----------+----------+-----------------------------------------+---------+-------------+--------------+-------------
+ id                | integer          |           | not null | nextval('inventories_id_seq'::regclass) | plain   |             |              | 
+ warehouse_id      | integer          |           | not null |                                         | plain   |             |              | 
+ product_id        | integer          |           | not null |                                         | plain   |             |              | 
+ batch_id          | integer          |           | not null |                                         | plain   |             |              | 
+ quantity          | double precision |           | not null |                                         | plain   |             |              | 
+ reserved_quantity | double precision |           | not null |                                         | plain   |             |              | 
+Indexes:
+    "inventories_pkey" PRIMARY KEY, btree (id)
+    "_warehouse_product_batch_uc" UNIQUE CONSTRAINT, btree (warehouse_id, product_id, batch_id)
+    "ix_inventories_id" btree (id)
+Foreign-key constraints:
+    "inventories_batch_id_fkey" FOREIGN KEY (batch_id) REFERENCES batches(id)
+    "inventories_product_id_fkey" FOREIGN KEY (product_id) REFERENCES products(id)
+    "inventories_warehouse_id_fkey" FOREIGN KEY (warehouse_id) REFERENCES warehouses(id)
+Access method: heap
+
+
+---------------- TABLE: transfers ----------------
+                                                                          Table "public.transfers"
+          Column          |            Type             | Collation | Nullable |                Default                | Storage  | Compression | Stats target | Description 
+--------------------------+-----------------------------+-----------+----------+---------------------------------------+----------+-------------+--------------+-------------
+ id                       | integer                     |           | not null | nextval('transfers_id_seq'::regclass) | plain    |             |              | 
+ source_warehouse_id      | integer                     |           | not null |                                       | plain    |             |              | 
+ destination_warehouse_id | integer                     |           | not null |                                       | plain    |             |              | 
+ product_id               | integer                     |           | not null |                                       | plain    |             |              | 
+ batch_id                 | integer                     |           | not null |                                       | plain    |             |              | 
+ quantity                 | double precision            |           | not null |                                       | plain    |             |              | 
+ status                   | character varying(50)       |           | not null |                                       | extended |             |              | 
+ description              | text                        |           |          |                                       | extended |             |              | 
+ source_approved_at       | timestamp without time zone |           |          |                                       | plain    |             |              | 
+ tracking_deadline        | timestamp without time zone |           |          |                                       | plain    |             |              | 
+ dispute_deadline         | timestamp without time zone |           |          |                                       | plain    |             |              | 
+ created_at               | timestamp without time zone |           |          |                                       | plain    |             |              | 
+ updated_at               | timestamp without time zone |           |          |                                       | plain    |             |              | 
+Indexes:
+    "transfers_pkey" PRIMARY KEY, btree (id)
+    "ix_transfers_id" btree (id)
+Foreign-key constraints:
+    "transfers_batch_id_fkey" FOREIGN KEY (batch_id) REFERENCES batches(id)
+    "transfers_destination_warehouse_id_fkey" FOREIGN KEY (destination_warehouse_id) REFERENCES warehouses(id)
+    "transfers_product_id_fkey" FOREIGN KEY (product_id) REFERENCES products(id)
+    "transfers_source_warehouse_id_fkey" FOREIGN KEY (source_warehouse_id) REFERENCES warehouses(id)
+Referenced by:
+    TABLE "audit_logs" CONSTRAINT "audit_logs_transfer_id_fkey" FOREIGN KEY (transfer_id) REFERENCES transfers(id)
+    TABLE "disputes" CONSTRAINT "disputes_transfer_id_fkey" FOREIGN KEY (transfer_id) REFERENCES transfers(id)
+    TABLE "transfer_tickets" CONSTRAINT "transfer_tickets_transfer_id_fkey" FOREIGN KEY (transfer_id) REFERENCES transfers(id)
+Access method: heap
+

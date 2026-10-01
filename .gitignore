@@ -1,0 +1,56 @@
+# Environment files
+.env
+**/.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+venv_new/
+.venv/
+
+# Logs
+logs/
+*.log
+
+# Backups
+backups/
+code_backups/
+deployment_backups/
+site_backups/
+task_backups/
+
+# Backup files
+*.bak
+
+# Node
+node_modules/
+
+# Frontend build
+dist/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Disabled tools
+admin_tools_disabled/
+
+# Backup folders
+handoff/
+releases/
+development/
+
+# Frontend generated builds
+**/dist.*
+**/dist.before_*/
+
+# Repair backups
+**/repair_backups/
+# Legacy disabled files
+**/*legacy_disabled*
+**/test.txt
